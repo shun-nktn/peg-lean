@@ -1,4 +1,5 @@
 import PegLean.Parser
+import Std
 
 open Parser
 
@@ -38,6 +39,9 @@ inductive AST
 | ident : String → AST
 | seq : List AST → AST
 | opt : Option AST → AST
+
+-- For generating recursions when compiling parser
+abbrev RuleTable := Std.HashMap String (Unit → Parser AST)
 
 
 -- Terminals
@@ -197,8 +201,52 @@ end PEGTerm
 
 namespace PEGExpr
 
+def sequence [Monad m] : List (m α) → m (List α)
+| [] => pure []
+| x::xs => do
+  let r ← x
+  let rs ← sequence xs
+  return (r::rs)
+
+def compile (rt : RuleTable) : PEGExpr → Parser AST
+| .term t  => t.compile
+| .nonTerm s => match rt.get? s with
+  | none => failure
+  | some r => r ()
+| .seq xs => AST.seq <$> sequence (xs.map (compile rt))
+| .or xs => xs.map (compile rt) |>.foldr (. <|> .) failure
+| .many x => AST.seq <$> Parser.many (x.compile rt)
+| .rep x => AST.seq <$> repeated (x.compile rt)
+| .opt x => AST.opt <$> option (x.compile rt)
+| .andPred x => do
+  let _ ← Parser.andPred (x.compile rt)
+  return (AST.seq [])
+| .notPred x => do
+  let _ ← Parser.notPred (x.compile rt)
+  return (AST.seq [])
 
 end PEGExpr
+
+
+namespace PEGRule
+
+def getIdent : PEGRule → String
+| .rule ident _ => ident
+
+end PEGRule
+
+
+namespace RuleTable
+
+def mkEmpty : List PEGRule → RuleTable
+| [] => Std.HashMap.empty
+| r::rs =>
+  let table := mkEmpty rs
+  table.insert r.getIdent (λ _ ↦ failure)
+
+def compileInto (empty : RuleTable) (rs : List PEGRule) : RuleTable := sorry
+
+end RuleTable
 
 
 #eval pegParser.run' "
