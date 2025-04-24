@@ -1,0 +1,10 @@
+name = "peg-lean"
+version = "0.1.0"
+defaultTargets = ["peg-lean"]
+
+[[lean_lib]]
+name = "PegLean"
+
+[[lean_exe]]
+name = "peg-lean"
+root = "Main"
