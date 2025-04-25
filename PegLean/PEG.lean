@@ -34,14 +34,17 @@ deriving Repr
 
 -- For parsing result
 inductive AST
+| empty : AST
+| rule : String → AST → AST
 | literal : String → AST
 | char : Char → AST
 | ident : String → AST
 | seq : List AST → AST
 | opt : Option AST → AST
+deriving Inhabited, Repr
 
 -- For generating recursions when compiling parser
-abbrev RuleTable := Std.HashMap String (Unit → Parser AST)
+abbrev RuleTable := Std.HashMap String (Parser AST)
 
 
 -- Terminals
@@ -186,6 +189,7 @@ unsafe def pegParser : Parser (List PEGRule) := do
 
 namespace PEGTerm
 
+-- Generate a parser from a terminal rule
 def compile : PEGTerm → Parser AST
 | .literal s => do
   Parser.literal s
@@ -201,6 +205,7 @@ end PEGTerm
 
 namespace PEGExpr
 
+-- Combine monads
 def sequence [Monad m] : List (m α) → m (List α)
 | [] => pure []
 | x::xs => do
@@ -208,11 +213,10 @@ def sequence [Monad m] : List (m α) → m (List α)
   let rs ← sequence xs
   return (r::rs)
 
-def compile (rt : RuleTable) : PEGExpr → Parser AST
+-- Generate a parser using the rule table
+partial def compile (rt : RuleTable) : PEGExpr → Parser AST
 | .term t  => t.compile
-| .nonTerm s => match rt.get? s with
-  | none => failure
-  | some r => r ()
+| .nonTerm s => delay (λ _ => (rt.getD s undefined))
 | .seq xs => AST.seq <$> sequence (xs.map (compile rt))
 | .or xs => xs.map (compile rt) |>.foldr (. <|> .) failure
 | .many x => AST.seq <$> Parser.many (x.compile rt)
@@ -230,28 +234,57 @@ end PEGExpr
 
 namespace PEGRule
 
-def getIdent : PEGRule → String
-| .rule ident _ => ident
+-- Get the name of a rule
+def ident : PEGRule → String
+| .rule ident' _ => ident'
+
+-- Get the expression of a rule
+def expr : PEGRule → PEGExpr
+| .rule _ expr' => expr'
+
+-- Generate a rule table
+partial def generateTable (rs : List PEGRule) : RuleTable :=
+  let empty := rs.foldl (λ acc r => acc.insert r.ident undefined) Std.HashMap.empty
+  let rec table : RuleTable :=
+    rs.foldl (λ acc r ↦
+      let parser := delay (λ _ => AST.rule r.ident <$> r.expr.compile table)
+      acc.insert r.ident parser
+    ) empty
+  table
+
+partial def compile (self : List PEGRule) (ident : String): Parser AST :=
+  let table := generateTable self
+  table.getD ident undefined
 
 end PEGRule
 
 
-namespace RuleTable
+namespace AST
 
-def mkEmpty : List PEGRule → RuleTable
-| [] => Std.HashMap.empty
-| r::rs =>
-  let table := mkEmpty rs
-  table.insert r.getIdent (λ _ ↦ failure)
+-- Flatten and remove empty branches
+partial def flatten (ast : AST) : AST :=
+  let rec flatten' : AST → Option AST
+  | seq [] => none
+  | seq xs =>
+    match xs.filterMap flatten' with
+    | [] => none
+    | [x] => some x
+    | xs => some (seq xs)
+  | rule name body =>
+    match flatten' body with
+    | some b => some (rule name b)
+    | none => none
+  | opt a =>
+    match a.bind flatten' with
+    | some x => some (opt (some x))
+    | none => some (opt none)
+  | other => some other
+  (flatten' ast).getD empty
 
-def compileInto (empty : RuleTable) (rs : List PEGRule) : RuleTable := sorry
-
-end RuleTable
+end AST
 
 
-#eval pegParser.run' "
-Value <- [0-9]+ / '(' Expr ')'
-Product <- Value (('*' / '/') Value)*
-Sum <- Product (('+' / '-') Product)*
-Expr <- Sum
-"
+unsafe def generateParser (peg : String) (entryPoint : String) :=
+  match pegParser.run' peg with
+  | .err msg _ => panic! (s! "Parsing rules failed; {msg}")
+  | .ok rules _ => AST.flatten <$> PEGRule.compile rules entryPoint

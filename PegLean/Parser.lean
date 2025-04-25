@@ -1,10 +1,12 @@
 structure ParsingContext where
   val : String
   pos : String.Pos
+deriving Inhabited
 
 inductive ParsingResult α
 | ok : α → ParsingContext → ParsingResult α
 | err : String → ParsingContext → ParsingResult α
+deriving Inhabited
 
 structure Parser (α : Type) where
   run : ParsingContext → ParsingResult α
@@ -33,6 +35,10 @@ instance [Repr α] : Repr (ParsingResult α) where
   | .ok result _ => s! "OK: {Repr.reprPrec result n}"
   | .err msg ctx => s! "Err at pos {ctx.pos}: {msg}"
 
+def unwrap! [Inhabited α] : ParsingResult α → α
+| .ok result _ => result
+| .err msg _ => panic! msg
+
 end ParsingResult
 
 
@@ -41,6 +47,10 @@ namespace Parser
 -- Make a new context and run
 def run' (self : Parser α) (s : String) : ParsingResult α :=
   self.run (ParsingContext.new s)
+
+-- Panics when error occuring
+def run! (self : Parser α) (s : String) [Inhabited α] : α :=
+  ParsingResult.unwrap! (self.run' s)
 
 -- Rewrite the error message
 def withErrMsg (self : Parser α) (s : String) : Parser α where
@@ -89,6 +99,17 @@ private def orElse (x : Parser α) (f : Unit → Parser α) : Parser α where
 instance : Alternative Parser where
   failure := failure
   orElse := orElse
+
+
+-- Lazy Evaluation
+
+-- Delay evaluating result
+def delay (lazy : Unit → Parser α) : Parser α where
+  run ctx := (lazy ()).run ctx
+
+-- Dummy delayed parser
+def undefined [Inhabited α] : Parser α :=
+  failure.withErrMsg "Undefined parser called"
 
 
 -- Other Combinators
